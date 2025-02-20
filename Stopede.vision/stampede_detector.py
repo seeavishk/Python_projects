@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict
 import pandas as pd
 
+# Yeh class ek single detection ka result store karegi
 @dataclass
 class DetectionResult:
     timestamp: datetime.datetime
@@ -19,123 +20,83 @@ class DetectionResult:
     new_weapon_detected: bool = False
     
 class StampedeDetector:
-    def __init__(self, 
-                 people_threshold: int = 25,
-                 speed_threshold: float = 40.0,
-                 panic_threshold: float = 0.6):
-        # Initialize models
+    def __init__(self, people_threshold: int = 25, speed_threshold: float = 40.0, panic_threshold: float = 0.6):
+        # YOLO model load kiya, jo log aur objects detect karega
         self.yolo_model = YOLO('yolov8n.pt')
+        
+        # OpenCV ka face detector load kiya
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
-        self.prev_frame = None
+        
+        self.prev_frame = None  # Pehle wala frame store karne ke liye
+        
+        # Thresholds jo alert trigger karenge
         self.people_threshold = people_threshold
         self.speed_threshold = speed_threshold
         self.panic_threshold = panic_threshold
         
-        # Define dangerous objects to detect
-        self.dangerous_objects = [
-            28,  # umbrella
-            43,  # knife
-           
-            67,  # cell phone
-            73,  # laptop
-            76,  # scissors
-            77,  # teddy bear
-            85,  # clock
-            86,  # vase
-            87,  # pen
-            88,  # pencil
-            89,  # ruler
-            90   # sharp objects
-        ]
+        # Dangerous objects ki list, jo agar detect hue to alert milega
+        self.dangerous_objects = [28, 43, 67, 73, 76, 77, 85, 86, 87, 88, 89, 90]
         
+        # Logging ka setup, jo incidents ko file me store karega
         logging.basicConfig(
-            filename='stampede_events.log', #storing of the log of the signal where the harm is being detected..
+            filename='stampede_events.log',
             level=logging.INFO,
             format='%(asctime)s - %(message)s'
         )
         
-        # Initialize results storage
-        self.results_df = pd.DataFrame(columns=[
-            'timestamp', 'people_count', 'movement_speed',
-            'panic_expressions', 'weapons_detected', 'stampede_probability'
-        ])
+        # Results store karne ke liye Pandas DataFrame
+        self.results_df = pd.DataFrame(columns=['timestamp', 'people_count', 'movement_speed', 'panic_expressions', 'weapons_detected', 'stampede_probability'])
         
-        # JO detect hua tha previously usko use krna to store in the log
-        
+        # Pehle detect hue weapons ko store karne ke liye
         self.prev_weapons = set()
 
+    # YOLO ka use karke log detect karega frame me
     def detect_people(self, frame):
-        results = self.yolo_model(frame, classes=[0])  # 0 is the class for person
+        results = self.yolo_model(frame, classes=[0])  # Class 0 means person
         return len(results[0].boxes), results[0].boxes
-
+    
+    # Optical flow se movement speed analyze karega
     def analyze_movement(self, frame):
         if self.prev_frame is None:
             self.prev_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             return 0.0
         
         current_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(
-            self.prev_frame, current_frame, None, 
-            0.5, 3, 15, 3, 5, 1.2, 0
-        )
-        
+        flow = cv2.calcOpticalFlowFarneback(self.prev_frame, current_frame, None, 0.5, 3, 15, 3, 5, 1.2, 0)
         speed = np.mean(np.abs(flow))
         self.prev_frame = current_frame
         return speed
-
+    
+    # DeepFace ka use karke panic detect karega
     def detect_panic(self, frame):
         try:
-            # Yaha prr normal code hai to detect the face #resource---cvzone
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
-    
-            faces = self.face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(30, 30)
-            )
-            
+            faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
             panic_count = 0
+            
             for (x, y, w, h) in faces:
-                # Extract face region with some margin
-                face_img = frame[max(0, y-20):min(frame.shape[0], y+h+20),
-                               max(0, x-20):min(frame.shape[1], x+w+20)]
-                
+                face_img = frame[max(0, y-20):min(frame.shape[0], y+h+20), max(0, x-20):min(frame.shape[1], x+w+20)]
                 if face_img.size == 0:  
                     continue
                 
-                # Yaha se face ko analyze krega ..deepface documnetaional
-                result = DeepFace.analyze(
-                    face_img,
-                    actions=['emotion'],
-                    enforce_detection=False,  #pehle false hi rkha gya..
-                    detector_backend='opencv'
-                )
-                
-                # Checking the emotions
+                result = DeepFace.analyze(face_img, actions=['emotion'], enforce_detection=False, detector_backend='opencv')
                 if isinstance(result, list):
                     result = result[0]
-                #three params for the detection of the face expression
+                
+                # Agar fear, anger ya surprise detect hua to count badhao
                 if result['dominant_emotion'] in ['fear', 'angry', 'surprise']:
                     panic_count += 1
                     
             return panic_count
-            
         except Exception as e:
             logging.error(f"Face analysis error: {str(e)}")
             return 0
-
+    
+    # YOLO ka use karke dangerous objects detect karega
     def detect_weapons(self, frame):
-        # Detect all specified dangerous objects
-        results = self.yolo_model(
-            frame, 
-            classes=self.dangerous_objects,
-            conf=0.35  #confidence of the dectection
-        )
-        
+        results = self.yolo_model(frame, classes=self.dangerous_objects, conf=0.35)
         detected_objects = []
         current_weapons = set()
         
@@ -147,51 +108,32 @@ class StampedeDetector:
                 detected_objects.append(f"{object_name} ({conf:.2f})")
                 current_weapons.add(object_name)
         
-        # Check for newly introduced weapons
         new_weapons = current_weapons - self.prev_weapons
         self.prev_weapons = current_weapons
         
         return detected_objects, bool(new_weapons)
-
-    def calculate_stampede_probability(self, 
-                                    people_count: int,
-                                    movement_speed: float,
-                                    panic_count: int,
-                                    weapons: List[str]) -> float:
-        # Enhanced weighted probability calculation
+    
+    # Stampede ka probability calculate karega
+    def calculate_stampede_probability(self, people_count, movement_speed, panic_count, weapons):
         probability = 0.0
-        
-        # People count factor (40% weight)
         if people_count > self.people_threshold:
             probability += 0.40 * min(people_count / self.people_threshold, 1.0)
-            
-        # Movement speed factor (35% weight)
         if movement_speed > self.speed_threshold:
             probability += 0.25 * min(movement_speed / self.speed_threshold, 1.0)
-            
-        # Panic expression factor (15% weight)
         if panic_count > 0:
             probability += 0.25 * min(panic_count / (people_count or 1), 1.0)
-            
-        # Dangerous objects factor (10% weight)
         if weapons:
-            probability += 0.10 * min(len(weapons) / 2, 1.0)  # Cap at 2 objects
-            
+            probability += 0.10 * min(len(weapons) / 2, 1.0)
         return min(probability, 1.0) * 100
-
+    
+    # Har frame ko process karega aur result return karega
     def process_frame(self, frame):
-        # Process frame with all detectors
         people_count, boxes = self.detect_people(frame)
         movement_speed = self.analyze_movement(frame)
         panic_count = self.detect_panic(frame)
         weapons, new_weapon_detected = self.detect_weapons(frame)
+        probability = self.calculate_stampede_probability(people_count, movement_speed, panic_count, weapons)
         
-        # Calculate probability
-        probability = self.calculate_stampede_probability(
-            people_count, movement_speed, panic_count, weapons
-        )
-        
-        # Create result object
         result = DetectionResult(
             timestamp=datetime.datetime.now(),
             people_count=people_count,
@@ -202,23 +144,9 @@ class StampedeDetector:
             new_weapon_detected=new_weapon_detected
         )
         
-        # Log if high risk or new weapon
         if probability > 70 or new_weapon_detected:
-            logging.warning(
-                f"{'NEW WEAPON DETECTED! ' if new_weapon_detected else ''}"
-                f"High stampede risk detected! "
-                f"Probability: {probability:.1f}% "
-                f"People: {people_count} "
-                f"Speed: {movement_speed:.2f} "
-                f"Panic: {panic_count} "
-                f"Objects: {', '.join(weapons)}"
-            )
-            
-        # Store results
-        self.results_df.loc[len(self.results_df)] = [
-            result.timestamp, result.people_count,
-            result.movement_speed, result.panic_expressions,
-            result.weapons_detected, result.stampede_probability
-        ]
+            logging.warning(f"{'NEW WEAPON DETECTED! ' if new_weapon_detected else ''}High stampede risk detected! Probability: {probability:.1f}% People: {people_count} Speed: {movement_speed:.2f} Panic: {panic_count} Objects: {', '.join(weapons)}")
         
-        return result, boxes 
+        self.results_df.loc[len(self.results_df)] = [result.timestamp, result.people_count, result.movement_speed, result.panic_expressions, result.weapons_detected, result.stampede_probability]
+        
+        return result, boxes
