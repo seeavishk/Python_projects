@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from deepface import DeepFace
+from deepface import DeepFace #heavy package for face detection
 from ultralytics import YOLO
 import datetime
 import logging
@@ -144,7 +144,7 @@ class StampedeDetector:
             new_weapon_detected=new_weapon_detected
         )
         
-        if probability > 70 or new_weapon_detected:
+        if probability > 40 or new_weapon_detected:
             logging.warning(f"{'NEW WEAPON DETECTED! ' if new_weapon_detected else ''}High stampede risk detected! Probability: {probability:.1f}% People: {people_count} Speed: {movement_speed:.2f} Panic: {panic_count} Objects: {', '.join(weapons)}")
         
         self.results_df.loc[len(self.results_df)] = [result.timestamp, result.people_count, result.movement_speed, result.panic_expressions, result.weapons_detected, result.stampede_probability]
